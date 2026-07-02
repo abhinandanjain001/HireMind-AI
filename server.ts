@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as XLSX from "xlsx";
 import dotenv from "dotenv";
+import fs from "fs";
 
 // Load environment variables
 dotenv.config();
@@ -43,7 +44,92 @@ async function startServer() {
 
   // In-memory data store
   console.log("Bootstrapping Talent Platform candidates...");
-  const candidates = generateAllCandidates();
+  let candidates: any[] = [];
+  let isCustomDatabase = false;
+  
+  try {
+    const customFilePath = path.join(process.cwd(), "src", "components", "Untitled.json");
+    if (fs.existsSync(customFilePath)) {
+      const stats = fs.statSync(customFilePath);
+      if (stats.size > 10) {
+        console.log("Found custom candidate details file Untitled.json. Loading...");
+        const rawData = fs.readFileSync(customFilePath, "utf8");
+        const parsedRaw = JSON.parse(rawData);
+        if (Array.isArray(parsedRaw)) {
+          // Unflatten helper
+          const unflattenCandidate = (raw: any): any => {
+            const result: any = {
+              profile: {},
+              redrob_signals: {}
+            };
+
+            for (const key of Object.keys(raw)) {
+              if (key.startsWith("profile.")) {
+                const nestedKey = key.substring(8);
+                result.profile[nestedKey] = raw[key];
+              } else if (key.startsWith("redrob_signals.")) {
+                const nestedKey = key.substring(15);
+                
+                if (nestedKey.startsWith("expected_salary_range_inr_lpa.")) {
+                  const salKey = nestedKey.substring(30);
+                  if (!result.redrob_signals.expected_salary_range_inr_lpa) {
+                    result.redrob_signals.expected_salary_range_inr_lpa = {};
+                  }
+                  result.redrob_signals.expected_salary_range_inr_lpa[salKey] = raw[key];
+                } else if (nestedKey.startsWith("skill_assessment_scores.")) {
+                  const skillKey = nestedKey.substring(24);
+                  if (!result.redrob_signals.skill_assessment_scores) {
+                    result.redrob_signals.skill_assessment_scores = {};
+                  }
+                  result.redrob_signals.skill_assessment_scores[skillKey] = raw[key];
+                } else {
+                  result.redrob_signals[nestedKey] = raw[key];
+                }
+              } else {
+                result[key] = raw[key];
+              }
+            }
+
+            // Fallbacks for critical missing fields
+            if (!result.profile.anonymized_name) {
+              result.profile.anonymized_name = result.candidate_id || "Anonymized Candidate";
+            }
+            if (typeof result.profile.years_of_experience === "string") {
+              result.profile.years_of_experience = parseFloat(result.profile.years_of_experience) || 0;
+            } else if (!result.profile.years_of_experience) {
+              result.profile.years_of_experience = 0;
+            }
+            if (!result.redrob_signals.expected_salary_range_inr_lpa) {
+              result.redrob_signals.expected_salary_range_inr_lpa = { min: 0, max: 0 };
+            } else {
+              if (typeof result.redrob_signals.expected_salary_range_inr_lpa.min === "string") {
+                result.redrob_signals.expected_salary_range_inr_lpa.min = parseFloat(result.redrob_signals.expected_salary_range_inr_lpa.min) || 0;
+              }
+              if (typeof result.redrob_signals.expected_salary_range_inr_lpa.max === "string") {
+                result.redrob_signals.expected_salary_range_inr_lpa.max = parseFloat(result.redrob_signals.expected_salary_range_inr_lpa.max) || 0;
+              }
+            }
+            if (!result.redrob_signals.skill_assessment_scores) {
+              result.redrob_signals.skill_assessment_scores = {};
+            }
+            return result;
+          };
+
+          candidates = parsedRaw.map(unflattenCandidate);
+          isCustomDatabase = true;
+          console.log(`Successfully bootstrapped ${candidates.length} custom candidates from Untitled.json.`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error reading or parsing custom candidates file, falling back:", err);
+  }
+
+  if (candidates.length === 0) {
+    console.log("No custom candidates loaded. Generating fallback synthetic pool...");
+    candidates = generateAllCandidates();
+    isCustomDatabase = false;
+  }
   
   // Default active JD: ML Engineer
   let activeJD: AnalyzedJD = {
@@ -597,12 +683,12 @@ Candidate Profile:
     });
   });
 
-  // API Route: Export Top-100 Candidates to official Redrob CSV format
+  // API Route: Export Candidates to official Redrob CSV format
   app.get("/api/export/csv", (req, res) => {
-    const top100 = cachedRankings.slice(0, 100);
+    const exportData = isCustomDatabase ? cachedRankings : cachedRankings.slice(0, 100);
     
     let csvContent = "candidate_id,rank,score,reasoning\n";
-    top100.forEach(item => {
+    exportData.forEach(item => {
       // Escape commas in reasoning to prevent corrupt CSV format
       const escapedReasoning = `"${item.reasoning.replace(/"/g, '""')}"`;
       csvContent += `${item.candidate_id},${item.rank},${(item.score / 100).toFixed(4)},${escapedReasoning}\n`;
@@ -613,11 +699,11 @@ Candidate Profile:
     res.status(200).send(csvContent);
   });
 
-  // API Route: Export Top-100 Candidates to XLSX format using ExcelJS / xlsx
+  // API Route: Export Candidates to XLSX format using ExcelJS / xlsx
   app.get("/api/export/xlsx", (req, res) => {
-    const top100 = cachedRankings.slice(0, 100);
+    const exportData = isCustomDatabase ? cachedRankings : cachedRankings.slice(0, 100);
     
-    const formattedData = top100.map(item => ({
+    const formattedData = exportData.map(item => ({
       candidate_id: item.candidate_id,
       rank: item.rank,
       score: parseFloat((item.score / 100).toFixed(4)),
