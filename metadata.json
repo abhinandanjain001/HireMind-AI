@@ -1,0 +1,6 @@
+{
+  "name": "AI Talent Intelligence Platform",
+  "description": "Enterprise-grade candidate discovery and ranking system powered by an in-memory high-performance scoring engine, behavioral signals analysis, and Gemini AI explainability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
